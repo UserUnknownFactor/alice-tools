@@ -75,6 +75,7 @@ int command_flat_extract(int argc, char *argv[])
 	}
 
 	// write manifest
+	NOTICE("Extracting FLAT file...");
 	output_file = get_output_path(output_file, argv[0]);
 	flat_extract(flat, output_file);
 

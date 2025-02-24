@@ -434,6 +434,7 @@ int command_ain_dump(int argc, char *argv[])
 		USAGE_ERROR(&cmd_ain_dump, "Wrong number of arguments.\n");
 	}
 
+	NOTICE("Dumping AIN file...");
 	FILE *output = alice_open_output_file(output_file);
 	struct port port;
 	port_file_init(&port, output);

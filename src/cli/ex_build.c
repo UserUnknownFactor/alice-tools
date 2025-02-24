@@ -72,6 +72,7 @@ int command_ex_build(int argc, char *argv[])
 	if (!ex) {
 		ALICE_ERROR("failed to parse .txtex file: '%s'", argv[0]);
 	}
+	NOTICE("Building EX file...");
 	ex_write(out, ex);
 	fclose(out);
 	ex_free(ex);

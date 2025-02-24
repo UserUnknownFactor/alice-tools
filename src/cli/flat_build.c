@@ -69,6 +69,7 @@ int command_flat_build(int argc, char *argv[])
 	}
 
 	// write flat file
+	NOTICE("Writing FLAT file...");
 	FILE *out = checked_fopen(output_file->text, "wb");
 	checked_fwrite(flat->data, flat->data_size, out);
 	fclose(out);
