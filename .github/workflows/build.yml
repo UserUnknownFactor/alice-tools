@@ -33,7 +33,7 @@ jobs:
             zlib1g-dev \
             ninja-build
 
-      - name: Configure (Meson) and build (Ninja)
+      - name: Configure and build
         run: |
           mkdir build
           meson build
@@ -50,8 +50,10 @@ jobs:
           ARCHIVE_NAME="${PACKAGE_PREFIX}-${PLATFORM}-${VERSION}.tar.gz"
 
           mkdir "$RELEASE_DIR"
-          cp build/src/alice "$RELEASE_DIR"
+          cp build/src/alice "$RELEASE_DIR/"
           cp README* "$RELEASE_DIR/"
+          cp LICENSE "$RELEASE_DIR/"
+          cp -r extra/licenses "$RELEASE_DIR/"
 
           tar czvf "$ARCHIVE_NAME" -C "$RELEASE_DIR" .
 
@@ -104,14 +106,13 @@ jobs:
             mingw-w64-x86_64-libiconv
             mingw-w64-x86_64-libwinpthread
 
-      - name: Configure (Meson) and build (Ninja)
+      - name: Configure and build
         run: |
           mkdir build
           meson build
           ninja -C build
 
-      # Deploy Qt dependencies (for galice)
-      - name: Deploy Qt
+      - name: Deploy Qt dependencies (for galice)
         run: |
           mkdir galice
           cp build/src/galice.exe galice/
@@ -144,6 +145,8 @@ jobs:
           cp build/src/alice.exe "$RELEASE_DIR/"
           cp -r galice "$RELEASE_DIR/"
           cp README* "$RELEASE_DIR/"
+          cp LICENSE "$RELEASE_DIR/"
+          cp -r extra/licenses "$RELEASE_DIR/"
 
           7z a "$ARCHIVE_NAME" -r "$RELEASE_DIR"/*
 
