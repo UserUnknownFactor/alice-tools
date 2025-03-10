@@ -85,12 +85,15 @@ static int command_ex_edit(int argc, char *argv[]) {
 
 	if (extract) {
 		struct ex *extract = ex_extract_append(base, edit);
+		NOTICE("Writing EX file...");
 		ex_write(out, extract);
 		ex_free(extract);
 	} else if (replace) {
+		NOTICE("Replacing data and writing EX file...");
 		ex_replace(base, edit);
 		ex_write(out, base);
 	} else {
+		NOTICE("Appending data to EX file...");
 		ex_append(base, edit);
 		ex_write(out, base);
 	}
