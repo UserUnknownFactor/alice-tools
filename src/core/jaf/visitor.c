@@ -54,6 +54,7 @@ struct jaf_expression *jaf_accept_expr(struct jaf_expression *expr, struct jaf_v
 	case JAF_EXP_SYSCALL:
 	case JAF_EXP_HLLCALL:
 	case JAF_EXP_METHOD_CALL:
+	case JAF_EXP_INTERFACE_CALL:
 	case JAF_EXP_BUILTIN_CALL:
 	case JAF_EXP_SUPER_CALL:
 		expr->call.fun = jaf_accept_expr(expr->call.fun, visitor);
@@ -76,6 +77,9 @@ struct jaf_expression *jaf_accept_expr(struct jaf_expression *expr, struct jaf_v
 		expr->subscript.expr = jaf_accept_expr(expr->subscript.expr, visitor);
 		expr->subscript.index = jaf_accept_expr(expr->subscript.index, visitor);
 		break;
+	case JAF_EXP_DUMMYREF:
+		expr->dummy.expr = jaf_accept_expr(expr->subscript.expr, visitor);
+		break;
 	case JAF_EXP_CHAR:
 	case JAF_EXP_VOID:
 	case JAF_EXP_INT:
@@ -83,6 +87,7 @@ struct jaf_expression *jaf_accept_expr(struct jaf_expression *expr, struct jaf_v
 	case JAF_EXP_STRING:
 	case JAF_EXP_IDENTIFIER:
 	case JAF_EXP_THIS:
+	case JAF_EXP_NULL:
 		break;
 	}
 
@@ -122,6 +127,9 @@ void jaf_accept_stmt(struct jaf_block_item *stmt, struct jaf_visitor *visitor)
 		break;
 	case JAF_DECL_STRUCT:
 		jaf_accept_block(stmt->struc.members, visitor);
+		jaf_accept_block(stmt->struc.methods, visitor);
+		break;
+	case JAF_DECL_INTERFACE:
 		jaf_accept_block(stmt->struc.methods, visitor);
 		break;
 	case JAF_STMT_LABELED:
@@ -166,6 +174,11 @@ void jaf_accept_stmt(struct jaf_block_item *stmt, struct jaf_visitor *visitor)
 	case JAF_STMT_RASSIGN:
 		stmt->rassign.lhs = jaf_accept_expr(stmt->rassign.lhs, visitor);
 		stmt->rassign.rhs = jaf_accept_expr(stmt->rassign.rhs, visitor);
+		break;
+	case JAF_STMT_ASSERT:
+		stmt->assertion.expr = jaf_accept_expr(stmt->assertion.expr, visitor);
+		stmt->assertion.expr_string = jaf_accept_expr(stmt->assertion.expr_string, visitor);
+		stmt->assertion.file = jaf_accept_expr(stmt->assertion.file, visitor);
 		break;
 	case JAF_STMT_NULL:
 	case JAF_STMT_GOTO:

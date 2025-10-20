@@ -182,26 +182,33 @@ static struct jaf_block *jaf_delegate(struct jaf_type_specifier *type, struct ja
     struct jaf_block *block;
     struct jaf_block_item *statement;
     struct jaf_function_declarator *fundecl;
+    struct jaf_name name;
+}
+
+%code requires {
+    #include "alice/jaf.h"
 }
 
 %token	<string>	I_CONSTANT F_CONSTANT C_CONSTANT STRING_LITERAL
 %token	<string>	IDENTIFIER TYPEDEF_NAME ENUMERATION_CONSTANT
 
-%token	<token>		INC_OP DEC_OP LEFT_OP RIGHT_OP LE_OP GE_OP EQ_OP NE_OP
+%token	<token>		INC_OP DEC_OP LEFT_OP RIGHT_OP LE_OP GE_OP EQ_OP NE_OP REQ_OP RNE_OP
 %token	<token>		AND_OP OR_OP MUL_ASSIGN DIV_ASSIGN MOD_ASSIGN ADD_ASSIGN
-%token	<token>		SUB_ASSIGN LEFT_ASSIGN RIGHT_ASSIGN AND_ASSIGN
+%token	<token>		SUB_ASSIGN LEFT_ASSIGN RIGHT_ASSIGN AND_ASSIGN DOUBLE_COLON
 %token	<token>		XOR_ASSIGN OR_ASSIGN
 %token	<token>		SYM_REF REF_ASSIGN ARRAY WRAP FUNCTYPE DELEGATE
 %token	<token>		FILE_MACRO LINE_MACRO FUNC_MACRO DATE_MACRO TIME_MACRO
 
-%token	<token>		CONST OVERRIDE THIS SYM_NEW
+%token	<token>		CONST OVERRIDE THIS SYM_NEW ASSERT SYM_NULL
 %token	<token>		BOOL CHAR INT LINT FLOAT VOID STRING INTP FLOATP HLL_PARAM HLL_FUNC HLL_FUNC_71
 %token	<token>		STRUCT UNION ENUM ELLIPSIS SYM_TRUE SYM_FALSE IMAIN_SYSTEM HLL_STRUCT
+%token	<token>		INTERFACE
 
 %token	CASE DEFAULT IF ELSE SYM_SWITCH WHILE DO FOR GOTO CONTINUE BREAK SYM_RETURN
 
 %type	<token>		unary_operator assignment_operator type_qualifier atomic_type_specifier
-%type	<string>	string param_identifer
+%type	<string>	string param_identifier
+%type	<name>		structured_name
 %type	<expression>	initializer
 %type	<expression>	postfix_expression unary_expression cast_expression
 %type	<expression>	multiplicative_expression additive_expression shift_expression
@@ -217,11 +224,12 @@ static struct jaf_block *jaf_delegate(struct jaf_type_specifier *type, struct ja
 %type	<block>		translation_unit external_declaration declaration function_definition
 %type	<block>		function_declaration parameter_list parameter_declaration
 %type	<block>		struct_declaration struct_declaration_list
+%type	<block>		interface_declaration interface_declaration_list
 %type	<block>		functype_parameter_list functype_parameter_declaration
 %type	<block>		compound_statement block_item_list block_item
 %type	<statement>	statement labeled_statement expression_statement selection_statement
 %type	<statement>	iteration_statement jump_statement message_statement struct_specifier
-%type	<statement>	rassign_statement
+%type	<statement>	interface_specifier rassign_statement assert_statement
 %type	<fundecl>	function_declarator functype_declarator
 
 /*
@@ -248,6 +256,7 @@ constant
 	| F_CONSTANT           { $$ = jaf_parse_float($1); }
 	| SYM_TRUE             { $$ = jaf_integer(1); }
 	| SYM_FALSE            { $$ = jaf_integer(0); }
+	| SYM_NULL             { $$ = jaf_null(); }
 	| ENUMERATION_CONSTANT { ERROR("Enums not supported"); } /* after it has been defined as such */
 	;
 
@@ -332,9 +341,11 @@ relational_expression
 	;
 
 equality_expression
-	: relational_expression                           { $$ = $1; }
-	| equality_expression EQ_OP relational_expression { $$ = jaf_binary_expr(JAF_EQ,  $1, $3); }
-	| equality_expression NE_OP relational_expression { $$ = jaf_binary_expr(JAF_NEQ, $1, $3); }
+	: relational_expression                            { $$ = $1; }
+	| equality_expression EQ_OP relational_expression  { $$ = jaf_binary_expr(JAF_EQ,  $1, $3); }
+	| equality_expression NE_OP relational_expression  { $$ = jaf_binary_expr(JAF_NEQ, $1, $3); }
+	| equality_expression REQ_OP relational_expression { $$ = jaf_binary_expr(JAF_REQ, $1, $3); }
+	| equality_expression RNE_OP relational_expression { $$ = jaf_binary_expr(JAF_RNE, $1, $3); }
 	;
 
 and_expression
@@ -418,7 +429,7 @@ atomic_type_specifier
 	: VOID             { $$ = JAF_VOID; }
 	| CHAR             { $$ = JAF_INT; }
 	| INT              { $$ = JAF_INT; }
-	| LINT             { $$ = JAF_LINT; }
+	| LINT             { $$ = JAF_LONG_INT; }
 	| FLOAT            { $$ = JAF_FLOAT; }
 	| BOOL             { $$ = JAF_BOOL; }
 	| STRING           { $$ = JAF_STRING; }
@@ -428,7 +439,6 @@ atomic_type_specifier
 	| HLL_FUNC_71      { $$ = JAF_HLL_FUNC_71; }
 	| HLL_FUNC         { $$ = JAF_HLL_FUNC; }
 	| HLL_STRUCT       { $$ = JAF_STRUCT; }
-	| DELEGATE         { $$ = JAF_DELEGATE; }
 	| IMAIN_SYSTEM     { $$ = JAF_IMAIN_SYSTEM; }
 	;
 
@@ -446,10 +456,13 @@ type_specifier
 	;
 
 struct_specifier
-	: STRUCT param_identifer '{' struct_declaration_list '}' { $$ = jaf_struct($2, $4); jaf_define_struct(jaf_ain_out, $$); }
+	: STRUCT param_identifier '{' struct_declaration_list '}' {
+		$$ = jaf_struct($2, $4);
+		jaf_define_struct(jaf_ain_out, $$);
+	}
 	;
 
-param_identifer
+param_identifier
 	: IDENTIFIER                             { $$ = $1; }
 	| IDENTIFIER '<' type_parameter_list '>' { ERROR("Type parameters not supported"); }
 	;
@@ -465,7 +478,6 @@ struct_declaration_list
 	;
 
 struct_declaration
-//	: type_specifier ';'	/* for anonymous struct/union */
 	: declaration_specifiers struct_declarator_list ';'             { $$ = jaf_vardecl($1, $2); }
 	| declaration_specifiers functype_declarator ';'                { $$ = jaf_function($1, $2, NULL); }
 	| declaration_specifiers functype_declarator compound_statement { $$ = jaf_function($1, $2, $3); }
@@ -478,6 +490,22 @@ struct_declaration
 struct_declarator_list
 	: declarator                            { $$ = jaf_declarators(NULL, $1); }
 	| struct_declarator_list ',' declarator { $$ = jaf_declarators($1, $3); }
+	;
+
+interface_specifier
+	: INTERFACE TYPEDEF_NAME '{' interface_declaration_list '}' {
+		$$ = jaf_interface($2, $4);
+		jaf_define_interface(jaf_ain_out, $$);
+	}
+	;
+
+interface_declaration_list
+	: interface_declaration                            { $$ = $1; }
+	| interface_declaration_list interface_declaration { $$ = jaf_merge_blocks($1, $2); }
+	;
+
+interface_declaration
+	: declaration_specifiers functype_declarator ';' { $$ = jaf_function($1, $2, NULL); }
 	;
 
 enum_specifier
@@ -549,6 +577,7 @@ statement
 	| jump_statement       { $$ = $1; }
 	| message_statement    { $$ = $1; }
 	| rassign_statement    { $$ = $1; }
+	| assert_statement     { $$ = $1; }
 	;
 
 labeled_statement
@@ -608,6 +637,10 @@ rassign_statement
 	: expression REF_ASSIGN expression ';' { $$ = jaf_rassign($1, $3); }
 	;
 
+assert_statement
+	: ASSERT '(' expression ')' { $$ = jaf_assert($3, jaf_line, jaf_file); }
+	;
+
 toplevel
 	: translation_unit { jaf_toplevel = jaf_merge_blocks(jaf_toplevel, $1); }
 	;
@@ -622,14 +655,15 @@ external_declaration
 	| function_declaration                                    { $$ = $1; }
 	| declaration                                             { $$ = $1; }
 	| struct_specifier ';'                                    { $$ = jaf_block($1); }
+	| interface_specifier ';'                                 { $$ = jaf_block($1); }
 	| enum_specifier ';'                                      { ERROR("Enums not supported"); }
 	| FUNCTYPE declaration_specifiers functype_declarator ';' { $$ = jaf_functype($2, $3); }
 	| DELEGATE declaration_specifiers functype_declarator ';' { $$ = jaf_delegate($2, $3); }
 	;
 
 functype_declarator
-	: IDENTIFIER '(' functype_parameter_list ')' { $$ = jaf_function_declarator($1, $3); }
-	| IDENTIFIER '(' ')'                         { $$ = jaf_function_declarator($1, NULL); }
+	: IDENTIFIER '(' functype_parameter_list ')' { $$ = jaf_function_declarator_simple($1, $3); }
+	| IDENTIFIER '(' ')'                         { $$ = jaf_function_declarator_simple($1, NULL); }
 	;
 
 functype_parameter_list
@@ -651,9 +685,16 @@ function_declaration
 	;
 
 function_declarator
-	: IDENTIFIER '(' parameter_list ')' { $$ = jaf_function_declarator($1, $3); }
-	| IDENTIFIER '(' ')'                { $$ = jaf_function_declarator($1, NULL); }
-	| IDENTIFIER '(' VOID ')'           { $$ = jaf_function_declarator($1, NULL); }
+	: structured_name '(' parameter_list ')' { $$ = jaf_function_declarator(&$1, $3); }
+	| structured_name '(' ')'                { $$ = jaf_function_declarator(&$1, NULL); }
+	| structured_name '(' VOID ')'           { $$ = jaf_function_declarator(&$1, NULL); }
+	;
+
+structured_name
+	: IDENTIFIER                              { jaf_name_init(&$$, $1); }
+	| TYPEDEF_NAME                            { jaf_name_init(&$$, $1); }
+	| structured_name DOUBLE_COLON IDENTIFIER   { jaf_name_append(&$$, $3); }
+	| structured_name DOUBLE_COLON TYPEDEF_NAME { jaf_name_append(&$$, $3); }
 	;
 
 parameter_list

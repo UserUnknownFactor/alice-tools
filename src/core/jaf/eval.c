@@ -18,6 +18,8 @@
 #include <string.h>
 #include "system4.h"
 #include "system4/string.h"
+#include "system4/utfsjis.h"
+#include "alice.h"
 #include "alice/jaf.h"
 
 static struct jaf_expression *jaf_simplify_negation(struct jaf_expression *in)
@@ -100,6 +102,18 @@ static struct jaf_expression *simplify_cast_to_float(struct jaf_expression *e)
 	return jaf_cast_expression(JAF_FLOAT, e);
 }
 
+static struct jaf_expression *jaf_simplify_string_concat(struct jaf_expression *e)
+{
+	if (e->lhs->type != JAF_EXP_STRING || e->rhs->type != JAF_EXP_STRING)
+		return e;
+	struct jaf_expression *r = e->lhs;
+	string_append(&r->s, e->rhs->s);
+	free_string(e->rhs->s);
+	free(e->rhs);
+	free(e);
+	return r;
+}
+
 static void jaf_normalize_for_arithmetic(struct jaf_expression *e)
 {
 	if (e->lhs->valuetype.data == AIN_FLOAT || e->rhs->valuetype.data == AIN_FLOAT) {
@@ -171,7 +185,10 @@ static struct jaf_expression *jaf_simplify_binary(struct jaf_expression *e)
 	case JAF_REMAINDER:
 		return jaf_simplify_remainder(e);
 	case JAF_PLUS:
-		return jaf_simplify_plus(e);
+		if (e->lhs->type == JAF_EXP_STRING)
+			return jaf_simplify_string_concat(e);
+		else
+			return jaf_simplify_plus(e);
 	case JAF_MINUS:
 		return jaf_simplify_minus(e);
 	case JAF_LSHIFT:
@@ -211,6 +228,9 @@ static struct jaf_expression *jaf_simplify_binary(struct jaf_expression *e)
 	case JAF_AND_ASSIGN:
 	case JAF_XOR_ASSIGN:
 	case JAF_OR_ASSIGN:
+	case JAF_CHAR_ASSIGN:
+	case JAF_REQ:
+	case JAF_RNE:
 		return e;
 	default:
 		COMPILER_ERROR(e, "Invalid binary operator");
@@ -302,8 +322,8 @@ static struct jaf_expression *jaf_simplify_cast(struct jaf_expression *in)
 static struct jaf_expression *jaf_simplify_char(struct jaf_expression *in)
 {
 	int c = 0;
-	int size = in->s->size;
-	char *s = in->s->text;
+	char *s = conv_output(in->s->text);
+	int size = strlen(s);
 	if (size <= 0)
 		goto invalid;
 	if (s[0] == '\\') {
@@ -315,11 +335,16 @@ static struct jaf_expression *jaf_simplify_char(struct jaf_expression *in)
 		default: goto invalid;
 		}
 	}
-	if (size != 1)
+	// XXX: assuming output encoding is SJIS
+	if (size == 1)
+		c = s[0];
+	else if (size == 2)
+		c = ((uint8_t)s[1] << 8) | (uint8_t)s[0];
+	else
 		goto invalid;
-	c = s[0];
 valid:
 	free_string(in->s);
+	free(s);
 	in->type = JAF_EXP_INT;
 	in->i = c;
 	return in;
@@ -343,12 +368,15 @@ struct jaf_expression *jaf_simplify(struct jaf_expression *in)
 	case JAF_EXP_SYSCALL:
 	case JAF_EXP_HLLCALL:
 	case JAF_EXP_METHOD_CALL:
+	case JAF_EXP_INTERFACE_CALL:
 	case JAF_EXP_BUILTIN_CALL:
 	case JAF_EXP_SUPER_CALL:
 	case JAF_EXP_NEW:
 	case JAF_EXP_MEMBER:
 	case JAF_EXP_SEQ:
 	case JAF_EXP_SUBSCRIPT:
+	case JAF_EXP_NULL:
+	case JAF_EXP_DUMMYREF:
 		return in;
 	case JAF_EXP_UNARY:
 		return jaf_simplify_unary(in);

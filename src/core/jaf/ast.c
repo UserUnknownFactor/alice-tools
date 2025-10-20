@@ -27,13 +27,20 @@
 extern unsigned long jaf_line;
 extern const char *jaf_file;
 
-static struct jaf_expression *jaf_expr(enum jaf_expression_type type, enum jaf_operator op)
+struct jaf_expression *jaf_expr(enum jaf_expression_type type, enum jaf_operator op)
 {
 	struct jaf_expression *e = xcalloc(1, sizeof(struct jaf_expression));
 	e->line = jaf_line;
 	e->file = jaf_file;
 	e->type = type;
 	e->op = op;
+	return e;
+}
+
+struct jaf_expression *jaf_null(void)
+{
+	struct jaf_expression *e = jaf_expr(JAF_EXP_NULL, 0);
+	e->valuetype.data = AIN_VOID;
 	return e;
 }
 
@@ -126,6 +133,30 @@ struct jaf_expression *jaf_char(struct string *text)
 	return e;
 }
 
+void jaf_name_init(struct jaf_name *name, struct string *str)
+{
+	name->nr_parts = 1;
+	name->parts = xmalloc(sizeof(struct string*));
+	name->parts[0] = str;
+}
+
+void jaf_name_append(struct jaf_name *name, struct string *str)
+{
+	name->nr_parts++;
+	name->parts = xrealloc(name->parts, name->nr_parts * sizeof(struct string*));
+	name->parts[name->nr_parts - 1] = str;
+}
+
+void jaf_name_prepend(struct jaf_name *name, struct string *str)
+{
+	name->nr_parts++;
+	name->parts = xrealloc(name->parts, name->nr_parts * sizeof(struct string*));
+	for (int i = name->nr_parts - 1; i >= 1; i--) {
+		name->parts[i] = name->parts[i - 1];
+	}
+	name->parts[0] = str;
+}
+
 struct jaf_expression *jaf_identifier(struct string *name)
 {
 	struct jaf_expression *e = jaf_expr(JAF_EXP_IDENTIFIER, 0);
@@ -136,6 +167,14 @@ struct jaf_expression *jaf_identifier(struct string *name)
 struct jaf_expression *jaf_this(void)
 {
 	return jaf_expr(JAF_EXP_THIS, 0);
+}
+
+struct string *jaf_method_name(struct string *ns, struct string *name)
+{
+	string_push_back(&ns, '@');
+	string_append(&ns, name);
+	free_string(name);
+	return ns;
 }
 
 struct jaf_expression *jaf_unary_expr(enum jaf_operator op, struct jaf_expression *expr)
@@ -335,10 +374,10 @@ struct jaf_block *jaf_parameter(struct jaf_type_specifier *type, struct jaf_decl
 	return p;
 }
 
-struct jaf_function_declarator *jaf_function_declarator(struct string *name, struct jaf_block *params)
+struct jaf_function_declarator *jaf_function_declarator(struct jaf_name *name, struct jaf_block *params)
 {
 	struct jaf_function_declarator *decl = xmalloc(sizeof(struct jaf_function_declarator));
-	decl->name = name;
+	decl->name = *name;
 	decl->params = params;
 
 	// XXX: special case for f(void) functype declarator.
@@ -348,6 +387,14 @@ struct jaf_function_declarator *jaf_function_declarator(struct string *name, str
 	}
 
 	return decl;
+}
+
+struct jaf_function_declarator *jaf_function_declarator_simple(struct string *str,
+		struct jaf_block *params)
+{
+	struct jaf_name name;
+	jaf_name_init(&name, str);
+	return jaf_function_declarator(&name, params);
 }
 
 struct jaf_block *jaf_function(struct jaf_type_specifier *type, struct jaf_function_declarator *decl, struct jaf_block *body)
@@ -368,7 +415,9 @@ struct jaf_block *jaf_constructor(struct string *name, struct jaf_block *body)
 {
 	struct jaf_type_specifier *type = jaf_type(JAF_VOID);
 	type->qualifiers  = JAF_QUAL_CONSTRUCTOR;
-	struct jaf_function_declarator *decl = jaf_function_declarator(name, NULL);
+	struct jaf_name jname;
+	jaf_name_init(&jname, name);
+	struct jaf_function_declarator *decl = jaf_function_declarator(&jname, NULL);
 	return jaf_function(type, decl, body);
 }
 
@@ -376,8 +425,25 @@ struct jaf_block *jaf_destructor(struct string *name, struct jaf_block *body)
 {
 	struct jaf_type_specifier *type = jaf_type(JAF_VOID);
 	type->qualifiers  = JAF_QUAL_DESTRUCTOR;
-	struct jaf_function_declarator *decl = jaf_function_declarator(name, NULL);
+	struct string *dname = make_string("~", 1);
+	string_append(&dname, name);
+	free_string(name);
+
+	struct jaf_name jname;
+	jaf_name_init(&jname, dname);
+	struct jaf_function_declarator *decl = jaf_function_declarator(&jname, NULL);
 	return jaf_function(type, decl, body);
+}
+
+static struct jaf_type_specifier *copy_type_specifier(struct jaf_type_specifier *type)
+{
+	if (!type)
+		return NULL;
+	struct jaf_type_specifier *out = xmalloc(sizeof(struct jaf_type_specifier));
+	*out = *type;
+	out->array_type = copy_type_specifier(type->array_type);
+	out->name = type->name ? string_dup(type->name) : NULL;
+	return out;
 }
 
 struct jaf_block *jaf_vardecl(struct jaf_type_specifier *type, struct jaf_declarator_list *declarators)
@@ -386,6 +452,8 @@ struct jaf_block *jaf_vardecl(struct jaf_type_specifier *type, struct jaf_declar
 	decls->nr_items = declarators->nr_decls;
 	decls->items = xcalloc(declarators->nr_decls, sizeof(struct jaf_block_item*));
 	for (size_t i = 0; i < declarators->nr_decls; i++) {
+		if (i > 0)
+			type = copy_type_specifier(type);
 		decls->items[i] = block_item(JAF_DECL_VAR);
 		init_declaration(type, decls->items[i], declarators->decls[i]);
 	}
@@ -516,10 +584,14 @@ struct jaf_block_item *jaf_do_while_loop(struct jaf_expression *test, struct jaf
 
 struct jaf_block_item *jaf_for_loop(struct jaf_block *init, struct jaf_block_item *test, struct jaf_expression *after, struct jaf_block_item *body)
 {
-	assert(test->kind == JAF_STMT_EXPRESSION);
+	assert(test->kind == JAF_STMT_EXPRESSION || test->kind == JAF_STMT_NULL);
 	struct jaf_block_item *item = block_item(JAF_STMT_FOR);
 	item->for_loop.init = init;
-	item->for_loop.test = test->expr;
+	if (test->kind == JAF_STMT_NULL) {
+		item->for_loop.test = NULL;
+	} else {
+		item->for_loop.test = test->expr;
+	}
 	item->for_loop.after = after;
 	item->for_loop.body = body;
 	free(test);
@@ -574,12 +646,58 @@ struct jaf_block_item *jaf_struct(struct string *name, struct jaf_block *fields)
 	return p;
 }
 
+struct jaf_block_item *jaf_interface(struct string *name, struct jaf_block *methods)
+{
+	struct jaf_block_item *p = block_item(JAF_DECL_INTERFACE);
+	p->struc.name = name;
+	p->struc.methods = xcalloc(1, sizeof(struct jaf_block));
+	p->struc.methods->items = xcalloc(methods->nr_items, sizeof(struct jaf_block_item*));
+
+	for (unsigned i = 0; i < methods->nr_items; i++) {
+		p->struc.methods->items[p->struc.methods->nr_items++] = methods->items[i];
+	}
+	free(methods->items);
+	free(methods);
+	return p;
+}
+
 struct jaf_block_item *jaf_rassign(struct jaf_expression *lhs, struct jaf_expression *rhs)
 {
 	struct jaf_block_item *item = block_item(JAF_STMT_RASSIGN);
 	item->rassign.lhs = lhs;
 	item->rassign.rhs = rhs;
 	return item;
+}
+
+struct jaf_block_item *jaf_assert(struct jaf_expression *expr, int line, const char *file)
+{
+	struct string *str = make_string("assert(", 7);
+	struct string *expr_str = jaf_expression_to_string(expr);
+	string_append(&str, expr_str);
+	string_push_back(&str, ')');
+	string_push_back(&str, ';');
+	free_string(expr_str);
+
+	struct jaf_block_item *item = block_item(JAF_STMT_ASSERT);
+	item->assertion.expr = expr;
+	item->assertion.expr_string = jaf_string(str);
+	item->assertion.line = line;
+	item->assertion.file = jaf_string(make_string(file, strlen(file)));
+	return item;
+}
+
+static void jaf_free_name(struct jaf_name name)
+{
+	for (size_t i = 0; i < name.nr_parts; i++) {
+		free_string(name.parts[i]);
+	}
+	free(name.parts);
+	if (name.collapsed) {
+		free_string(name.collapsed);
+		name.collapsed = NULL;
+	}
+	name.nr_parts = 0;
+	name.parts = NULL;
 }
 
 static void jaf_free_argument_list(struct jaf_argument_list *list)
@@ -611,6 +729,7 @@ void jaf_free_expr(struct jaf_expression *expr)
 	case JAF_EXP_INT:
 	case JAF_EXP_FLOAT:
 	case JAF_EXP_THIS:
+	case JAF_EXP_NULL:
 		break;
 	case JAF_EXP_STRING:
 	case JAF_EXP_CHAR:
@@ -618,6 +737,11 @@ void jaf_free_expr(struct jaf_expression *expr)
 		break;
 	case JAF_EXP_IDENTIFIER:
 		free_string(expr->ident.name);
+		if (expr->ident.kind == JAF_IDENT_CONST) {
+			if (expr->ident.constval.data_type == AIN_STRING) {
+				free(expr->ident.constval.string_value);
+			}
+		}
 		break;
 	case JAF_EXP_UNARY:
 		jaf_free_expr(expr->expr);
@@ -635,6 +759,7 @@ void jaf_free_expr(struct jaf_expression *expr)
 	case JAF_EXP_SYSCALL:
 	case JAF_EXP_HLLCALL:
 	case JAF_EXP_METHOD_CALL:
+	case JAF_EXP_INTERFACE_CALL:
 	case JAF_EXP_BUILTIN_CALL:
 	case JAF_EXP_SUPER_CALL:
 		jaf_free_expr(expr->call.fun);
@@ -659,7 +784,11 @@ void jaf_free_expr(struct jaf_expression *expr)
 		jaf_free_expr(expr->subscript.expr);
 		jaf_free_expr(expr->subscript.index);
 		break;
+	case JAF_EXP_DUMMYREF:
+		jaf_free_expr(expr->dummy.expr);
+		break;
 	}
+	ain_free_type(&expr->valuetype);
 	free(expr);
 }
 
@@ -684,13 +813,14 @@ void jaf_free_block_item(struct jaf_block_item *item)
 	case JAF_DECL_FUNCTYPE:
 	case JAF_DECL_DELEGATE:
 	case JAF_DECL_FUN:
-		free_string(item->fun.name);
+		jaf_free_name(item->fun.name);
 		jaf_free_type_specifier(item->fun.type);
 		jaf_free_block(item->fun.params);
 		jaf_free_block(item->fun.body);
 		ain_free_type(&item->fun.valuetype);
 		break;
 	case JAF_DECL_STRUCT:
+	case JAF_DECL_INTERFACE:
 		free_string(item->struc.name);
 		jaf_free_block(item->struc.members);
 		jaf_free_block(item->struc.methods);
@@ -747,6 +877,11 @@ void jaf_free_block_item(struct jaf_block_item *item)
 	case JAF_STMT_RASSIGN:
 		jaf_free_expr(item->rassign.lhs);
 		jaf_free_expr(item->rassign.rhs);
+		break;
+	case JAF_STMT_ASSERT:
+		jaf_free_expr(item->assertion.expr);
+		jaf_free_expr(item->assertion.expr_string);
+		jaf_free_expr(item->assertion.file);
 		break;
 	}
 	free(item);

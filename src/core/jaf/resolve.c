@@ -29,7 +29,11 @@ static bool jaf_resolve_typedef(struct jaf_type_specifier *type, struct ain *ain
 		int no;
 		char *u = conv_output(type->name->text);
 		if ((no = ain_get_struct(ain, u)) >= 0) {
-			type->type = JAF_STRUCT;
+			if (ain->structures[no].is_interface) {
+				type->type = JAF_IFACE;
+			} else {
+				type->type = JAF_STRUCT;
+			}
 			type->struct_no = no;
 		} else if ((no = ain_get_functype(ain, u)) >= 0) {
 			type->type = JAF_FUNCTYPE;
@@ -83,6 +87,7 @@ static struct jaf_expression *jaf_resolve_expression_types(struct jaf_expression
 	case JAF_EXP_SYSCALL:
 	case JAF_EXP_HLLCALL:
 	case JAF_EXP_METHOD_CALL:
+	case JAF_EXP_INTERFACE_CALL:
 	case JAF_EXP_BUILTIN_CALL:
 	case JAF_EXP_SUPER_CALL:
 	case JAF_EXP_CAST:
@@ -90,6 +95,8 @@ static struct jaf_expression *jaf_resolve_expression_types(struct jaf_expression
 	case JAF_EXP_SEQ:
 	case JAF_EXP_SUBSCRIPT:
 	case JAF_EXP_CHAR:
+	case JAF_EXP_NULL:
+	case JAF_EXP_DUMMYREF:
 		break;
 	}
 
@@ -108,6 +115,7 @@ static void jaf_resolve_statement_types(struct jaf_block_item *item, struct jaf_
 		jaf_resolve_typedef_s(item, item->fun.type, ain);
 		break;
 	case JAF_DECL_STRUCT:
+	case JAF_DECL_INTERFACE:
 	case JAF_DECL_FUNCTYPE:
 	case JAF_DECL_DELEGATE:
 	case JAF_STMT_NULL:
@@ -127,6 +135,7 @@ static void jaf_resolve_statement_types(struct jaf_block_item *item, struct jaf_
 	case JAF_STMT_DEFAULT:
 	case JAF_STMT_MESSAGE:
 	case JAF_STMT_RASSIGN:
+	case JAF_STMT_ASSERT:
 	case JAF_EOF:
 		break;
 	}

@@ -34,7 +34,7 @@ O   [0-7]
 D   [0-9]
 NZ  [1-9]
 L   ([a-zA-Z_]|{UCH})
-A   ([a-zA-Z_0-9:@#]|{UCH})
+A   ([a-zA-Z_0-9#]|{UCH})
 AT  ([a-zA-Z_0-9]|{UCH})
 H   [a-fA-F0-9]
 HP  (0[xX])
@@ -88,6 +88,8 @@ unsigned long jaf_line = 1;
 "return"				{ return(SYM_RETURN); }
 "string"				{ return(STRING); }
 "struct"				{ return(STRUCT); }
+"class"					{ return(STRUCT); }
+"interface"				{ return(INTERFACE); }
 "switch"				{ return(SYM_SWITCH); }
 "union"					{ return(UNION); }
 "void"					{ return(VOID); }
@@ -112,6 +114,8 @@ unsigned long jaf_line = 1;
 "override"                              { return OVERRIDE; }
 "this"                                  { return THIS; }
 "new"                                   { return SYM_NEW; }
+"assert"                                { return ASSERT; }
+"NULL"					{ return SYM_NULL; }
 
 {L}                                     { return check_type(); }
 {L}{A}*{AT}                             { return check_type(); }
@@ -152,11 +156,14 @@ unsigned long jaf_line = 1;
 ">="					{ return GE_OP; }
 "=="					{ return EQ_OP; }
 "!="					{ return NE_OP; }
+"==="					{ return REQ_OP; }
+"!=="					{ return RNE_OP; }
 ";"					{ return ';'; }
 ("{"|"<%")				{ return '{'; }
 ("}"|"%>")				{ return '}'; }
 ","					{ return ','; }
 ":"					{ return ':'; }
+"::"					{ return DOUBLE_COLON; }
 "="					{ return '='; }
 "("					{ return '('; }
 ")"					{ return ')'; }
