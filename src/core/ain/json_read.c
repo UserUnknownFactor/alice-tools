@@ -94,27 +94,18 @@ static void read_type_declaration(cJSON *decl, struct ain_type *dst)
 		ERROR("Invalid type declaration (array size = %d)", size);
 
 	_read_type_declaration(decl, dst);
-	if (size == 4) {
-		int i;
-		cJSON *v, *a = cJSON_GetArrayItem(decl, 3);
-		if (cJSON_IsNull(a))
-			return;
-		if (!cJSON_IsArray(a))
-			ERROR("Non-array in array-type slot");
-		if (cJSON_GetArraySize(a) == 0)
-			return;
+	if (size != 4)
+		return;
+	cJSON *a = cJSON_GetArrayItem(decl, 3);
+	if (cJSON_IsNull(a))
+		return;
+	if (!cJSON_IsArray(a))
+		ERROR("Non-array in array-type slot");
+	if (cJSON_GetArraySize(a) == 0)
+		return;
 
-		dst->array_type = xcalloc(cJSON_GetArraySize(a), sizeof(struct ain_variable));
-		cJSON_ArrayForEachIndex(i, v, a) {
-			if (!cJSON_IsArray(v))
-				ERROR("Non-array in array-type list");
-			if (cJSON_GetArraySize(v) != 3)
-				ERROR("Invalid type declaration (array size = %d)", cJSON_GetArraySize(v));
-			_read_type_declaration(v, &dst->array_type[i]);
-			dst->array_type[i].array_type = &dst->array_type[i+1];
-		}
-		dst->array_type[i-1].array_type = NULL;
-	}
+	dst->array_type = xcalloc(1, sizeof(struct ain_type));
+	read_type_declaration(a, dst->array_type);
 }
 
 static void read_variable_declaration(cJSON *decl, struct ain_variable *dst)
@@ -194,6 +185,7 @@ static void read_function_declarations(cJSON *decl, struct ain *ain)
 	ain_free_functions(ain);
 	ain->functions = functions;
 	ain->nr_functions = i;
+	ain_index_functions(ain);
 }
 
 static struct ain_variable *read_variable_declarations(cJSON *decl, int *n)
@@ -264,6 +256,7 @@ static void read_structure_declarations(cJSON *decl, struct ain *ain)
 	ain_free_structures(ain);
 	ain->structures = structs;
 	ain->nr_structures = i;
+	ain_index_structures(ain);
 }
 
 static void read_library_declaration(cJSON *decl, struct ain_library *dst)
@@ -436,6 +429,7 @@ static void read_delegate_declarations(cJSON *decl, struct ain *ain)
 {
 	ain_free_delegates(ain);
 	ain->delegates = _read_function_type_declarations(decl, &ain->nr_delegates);
+	ain->DELG.present = true;
 }
 
 static void read_global_group_declarations(cJSON *decl, struct ain *ain)
@@ -456,14 +450,28 @@ static void read_enum_declarations(cJSON *decl, struct ain *ain)
 
 		int j;
 		cJSON *s, *syms = cJSON_GetObjectArray_NonNull(e, "values");
-		char **symbols = xcalloc(cJSON_GetArraySize(syms), sizeof(char*));
+		struct ain_enum_value *values = xcalloc(cJSON_GetArraySize(syms), sizeof(char*));
 		cJSON_ArrayForEachIndex(j, s, syms) {
-			if (!cJSON_IsString(s))
-				ERROR("Non-string in enum symbol list");
-			symbols[i] = strdup(s->valuestring);
+			if (cJSON_IsArray(s)) {
+				if (cJSON_GetArraySize(s) != 2)
+					ERROR("Unexpected enum array size");
+				cJSON *str = cJSON_GetArrayItem(s, 0);
+				cJSON *val = cJSON_GetArrayItem(s, 1);
+				if (!cJSON_IsString(str))
+					ERROR("Non-string as enum symbol");
+				if (!cJSON_IsNumber(val))
+					ERROR("Non-number as enum value");
+				values[j].symbol = xstrdup(str->valuestring);
+				values[j].value = val->valueint;
+			} else if (cJSON_IsString(s)) {
+				values[j].symbol = xstrdup(s->valuestring);
+				values[j].value = j;
+			} else {
+				ERROR("Invalid value as enum value list");
+			}
 		}
-		enums[i].nr_symbols = j;
-		enums[i].symbols = symbols;
+		enums[i].nr_values = j;
+		enums[i].values = values;
 	}
 
 	ain_free_enums(ain);
@@ -538,6 +546,7 @@ void ain_read_json(const char *filename, struct ain *ain)
 	buf = xmalloc(len + 1);
 	if (fread(buf, len, 1, f) != 1)
 		ERROR("Failed to read '%s': %s", filename, strerror(errno));
+	buf[len] = '\0';
 
 	if (fclose(f))
 		ERROR("Failed to close '%s': %s", filename, strerror(errno));
@@ -547,4 +556,7 @@ void ain_read_json(const char *filename, struct ain *ain)
 		ERROR("Failed to parse JSON file '%s'", filename);
 
 	read_json_declarations(j, ain);
+
+	cJSON_Delete(j);
+	free(buf);
 }

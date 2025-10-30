@@ -61,7 +61,7 @@ static struct jaf_block *insert_eof(struct ain *ain, struct jaf_block *block, co
     int file_no = ain_add_file(ain, basename(filename));
     free(filename);
 
-    struct jaf_block_item *eof = xmalloc(sizeof(struct jaf_block_item));
+    struct jaf_block_item *eof = xcalloc(1, sizeof(struct jaf_block_item));
     eof->kind = JAF_EOF;
     eof->file_no = file_no;
     return jaf_block_append(block, eof);
@@ -92,29 +92,6 @@ struct jaf_block *jaf_parse(struct ain *ain, const char **files, unsigned nr_fil
     jaf_toplevel = NULL;
     jaf_ain_out = NULL;
     return r;
-}
-
-int sym_type(char *name)
-{
-    char *u = conv_output(name);
-    if (ain_get_struct(jaf_ain_out, u) >= 0) {
-	free(u);
-	return TYPEDEF_NAME;
-    }
-    if (ain_get_functype(jaf_ain_out, u) >= 0) {
-	free(u);
-	return TYPEDEF_NAME;
-    }
-    if (ain_get_delegate(jaf_ain_out, u) >= 0) {
-        free(u);
-        return TYPEDEF_NAME;
-    }
-    if (ain_get_enum(jaf_ain_out, u) >= 0) {
-        free(u);
-        return TYPEDEF_NAME;
-    }
-    free(u);
-    return IDENTIFIER;
 }
 
 static int parse_int(struct string *s)
@@ -183,6 +160,7 @@ static struct jaf_block *jaf_delegate(struct jaf_type_specifier *type, struct ja
     struct jaf_block_item *statement;
     struct jaf_function_declarator *fundecl;
     struct jaf_name name;
+    jaf_string_list strlist;
 }
 
 %code requires {
@@ -202,7 +180,7 @@ static struct jaf_block *jaf_delegate(struct jaf_type_specifier *type, struct ja
 %token	<token>		CONST OVERRIDE THIS SYM_NEW ASSERT SYM_NULL
 %token	<token>		BOOL CHAR INT LINT FLOAT VOID STRING INTP FLOATP HLL_PARAM HLL_FUNC HLL_FUNC_71
 %token	<token>		STRUCT UNION ENUM ELLIPSIS SYM_TRUE SYM_FALSE IMAIN_SYSTEM HLL_STRUCT
-%token	<token>		INTERFACE
+%token	<token>		HLL_DELEGATE INTERFACE PUBLIC PRIVATE
 
 %token	CASE DEFAULT IF ELSE SYM_SWITCH WHILE DO FOR GOTO CONTINUE BREAK SYM_RETURN
 
@@ -231,6 +209,7 @@ static struct jaf_block *jaf_delegate(struct jaf_type_specifier *type, struct ja
 %type	<statement>	iteration_statement jump_statement message_statement struct_specifier
 %type	<statement>	interface_specifier rassign_statement assert_statement
 %type	<fundecl>	function_declarator functype_declarator
+%type	<strlist>	interface_list
 
 /*
  * Shift-reduce conflicts:
@@ -279,8 +258,8 @@ postfix_expression
 	| postfix_expression '(' ')'                             { $$ = jaf_function_call($1, NULL); }
 	| atomic_type_specifier '(' expression ')'               { $$ = jaf_cast_expression($1, $3); }
 	| postfix_expression '(' argument_expression_list ')'    { $$ = jaf_function_call($1, $3); }
-	| SYM_NEW TYPEDEF_NAME '(' argument_expression_list ')'  { $$ = jaf_new(jaf_typedef($2), $4); }
-	| SYM_NEW TYPEDEF_NAME '(' ')'                           { $$ = jaf_new(jaf_typedef($2), NULL); }
+	| SYM_NEW IDENTIFIER '(' argument_expression_list ')'  { $$ = jaf_new(jaf_typedef($2), $4); }
+	| SYM_NEW IDENTIFIER '(' ')'                           { $$ = jaf_new(jaf_typedef($2), NULL); }
 	| postfix_expression '.' IDENTIFIER                      { $$ = jaf_member_expr($1, $3); }
 	| postfix_expression INC_OP                              { $$ = jaf_unary_expr(JAF_POST_INC, $1); }
 	| postfix_expression DEC_OP                              { $$ = jaf_unary_expr(JAF_POST_DEC, $1); }
@@ -438,6 +417,7 @@ atomic_type_specifier
 	| HLL_PARAM        { $$ = JAF_HLL_PARAM; }
 	| HLL_FUNC_71      { $$ = JAF_HLL_FUNC_71; }
 	| HLL_FUNC         { $$ = JAF_HLL_FUNC; }
+	| HLL_DELEGATE     { $$ = JAF_DELEGATE; }
 	| HLL_STRUCT       { $$ = JAF_STRUCT; }
 	| IMAIN_SYSTEM     { $$ = JAF_IMAIN_SYSTEM; }
 	;
@@ -446,18 +426,27 @@ type_specifier
 	: atomic_type_specifier                          { $$ = jaf_type($1); }
 	| ARRAY '@' atomic_type_specifier                { $$ = jaf_array_type(jaf_type($3), 1); }
 	| ARRAY '@' atomic_type_specifier '@' I_CONSTANT { $$ = jaf_array_type(jaf_type($3), parse_int($5)); }
-	| ARRAY '@' TYPEDEF_NAME                         { $$ = jaf_array_type(jaf_typedef($3), 1); }
-	| ARRAY '@' TYPEDEF_NAME '@' I_CONSTANT          { $$ = jaf_array_type(jaf_typedef($3), parse_int($5)); }
+	| ARRAY '@' IDENTIFIER                         { $$ = jaf_array_type(jaf_typedef($3), 1); }
+	| ARRAY '@' IDENTIFIER '@' I_CONSTANT          { $$ = jaf_array_type(jaf_typedef($3), parse_int($5)); }
 	| ARRAY '<' type_specifier '>'                   { $$ = jaf_array_type($3, 1); }
 	| ARRAY '<' '?' '>'                              { $$ = jaf_array_type(jaf_type(JAF_VOID), 1); }
 	| WRAP  '<' type_specifier '>'                   { $$ = jaf_wrap($3); }
 	| WRAP  '<' '?' '>'                              { $$ = jaf_wrap(jaf_type(JAF_VOID)); }
-	| TYPEDEF_NAME                                   { $$ = jaf_typedef($1); }
+	| IDENTIFIER                                   { $$ = jaf_typedef($1); }
+	;
+
+interface_list
+	: IDENTIFIER                    { kv_init($$); kv_push(struct string*, $$, $1); }
+	| interface_list ',' IDENTIFIER { $$ = $1; kv_push(struct string*, $$, $3); }
 	;
 
 struct_specifier
 	: STRUCT param_identifier '{' struct_declaration_list '}' {
-		$$ = jaf_struct($2, $4);
+		$$ = jaf_struct($2, $4, NULL);
+		jaf_define_struct(jaf_ain_out, $$);
+	}
+	| STRUCT param_identifier ':' interface_list '{' struct_declaration_list '}' {
+		$$ = jaf_struct($2, $6, &$4);
 		jaf_define_struct(jaf_ain_out, $$);
 	}
 	;
@@ -485,6 +474,8 @@ struct_declaration
 	| IDENTIFIER '(' ')' ';'                                        { $$ = jaf_constructor($1, NULL); }
 	| '~' IDENTIFIER '(' ')' compound_statement                     { $$ = jaf_destructor($2, $5); }
 	| '~' IDENTIFIER '(' ')' ';'                                    { $$ = jaf_destructor($2, NULL); }
+	| PUBLIC ':' struct_declaration                                 { $$ = $3; }
+	| PRIVATE ':' struct_declaration                                { $$ = $3; }
 	;
 
 struct_declarator_list
@@ -493,7 +484,7 @@ struct_declarator_list
 	;
 
 interface_specifier
-	: INTERFACE TYPEDEF_NAME '{' interface_declaration_list '}' {
+	: INTERFACE IDENTIFIER '{' interface_declaration_list '}' {
 		$$ = jaf_interface($2, $4);
 		jaf_define_interface(jaf_ain_out, $$);
 	}
@@ -678,10 +669,12 @@ functype_parameter_declaration
 
 function_definition
 	: declaration_specifiers function_declarator compound_statement { $$ = jaf_function($1, $2, $3); }
+	| function_declarator compound_statement  { $$ = jaf_function(NULL, $1, $2); }
 	;
 
 function_declaration
 	: declaration_specifiers function_declarator ';' { $$ = jaf_function($1, $2, NULL); }
+	| function_declarator ';' { $$ = jaf_function(NULL, $1, NULL); }
 	;
 
 function_declarator
@@ -692,9 +685,7 @@ function_declarator
 
 structured_name
 	: IDENTIFIER                              { jaf_name_init(&$$, $1); }
-	| TYPEDEF_NAME                            { jaf_name_init(&$$, $1); }
 	| structured_name DOUBLE_COLON IDENTIFIER   { jaf_name_append(&$$, $3); }
-	| structured_name DOUBLE_COLON TYPEDEF_NAME { jaf_name_append(&$$, $3); }
 	;
 
 parameter_list

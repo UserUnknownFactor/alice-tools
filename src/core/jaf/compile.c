@@ -45,7 +45,7 @@ struct label {
 };
 
 struct scope {
-	size_t nr_vars;
+	int nr_vars;
 	int *vars;
 };
 
@@ -126,6 +126,14 @@ static void write_instruction1(struct compiler_state *state, uint16_t opcode, ui
 		write_instruction0(state, PUSHLOCALPAGE);
 		write_instruction1(state, PUSH, arg0);
 		write_instruction0(state, REF);
+	} else if (opcode == SH_LOCALINC && AIN_VERSION_GTE(state->ain, 6, 1)) {
+		write_instruction0(state, PUSHLOCALPAGE);
+		write_instruction1(state, PUSH, arg0);
+		write_instruction0(state, INC);
+	} else if (opcode == SH_LOCALDEC && AIN_VERSION_GTE(state->ain, 6, 1)) {
+		write_instruction0(state, PUSHLOCALPAGE);
+		write_instruction1(state, PUSH, arg0);
+		write_instruction0(state, DEC);
 	} else {
 		write_opcode(state, opcode);
 		write_argument(state, arg0);
@@ -199,6 +207,27 @@ static void start_scope(struct compiler_state *state)
 	state->nr_scopes++;
 }
 
+static void compile_local_ref(struct compiler_state *state, int var_no);
+static void compile_delete_var(struct compiler_state *state, int var_no)
+{
+	struct ain_function *f = &state->ain->functions[state->func_no];
+	struct ain_variable *v = &f->vars[var_no];
+	switch (v->type.data) {
+	case AIN_STRUCT:
+	case AIN_ARRAY:
+	case AIN_REF_TYPE:
+	case AIN_IFACE:
+		write_instruction1(state, SH_LOCALDELETE, var_no);
+		break;
+	case AIN_ARRAY_TYPE:
+		compile_local_ref(state, var_no);
+		write_instruction0(state, A_FREE);
+		break;
+	default:
+		break;
+	}
+}
+
 static void end_scope(struct compiler_state *state)
 {
 	struct scope *scope = &state->scopes[--state->nr_scopes];
@@ -209,24 +238,8 @@ static void end_scope(struct compiler_state *state)
 		return;
 	}
 
-	for (size_t i = 0; i < scope->nr_vars; i++) {
-		struct ain_function *f = &state->ain->functions[state->func_no];
-		struct ain_variable *v = &f->vars[scope->vars[i]];
-		if (v->type.data == AIN_ARRAY || v->type.data == AIN_REF_ARRAY) {
-			// TODO
-		} else if (v->type.data == AIN_STRUCT || v->type.data == AIN_REF_STRUCT
-				|| v->type.data == AIN_IFACE) {
-			// .LOCALDELETE var
-			// TODO: use SH_LOCALDELETE when available
-			write_instruction0(state, PUSHLOCALPAGE);
-			write_instruction1(state, PUSH, scope->vars[i]);
-			write_instruction0(state, DUP2);
-			write_instruction0(state, REF);
-			write_instruction0(state, DELETE);
-			write_instruction1(state, PUSH, -1);
-			write_instruction0(state, ASSIGN);
-			write_instruction0(state, POP);
-		}
+	for (int i = scope->nr_vars - 1; i >= 0; i--) {
+		compile_delete_var(state, scope->vars[i]);
 	}
 	free(scope->vars);
 }
@@ -238,12 +251,14 @@ static void scope_add_variable(struct compiler_state *state, int var_no)
 	scope->vars[scope->nr_vars++] = var_no;
 }
 
-static void start_function(struct compiler_state *state, struct jaf_fundecl *decl)
+static void start_function(struct compiler_state *state, int func_no, int super_no)
 {
 	state->nr_labels = 0;
 	state->nr_gotos = 0;
 	state->labels = NULL;
 	state->gotos = NULL;
+	state->func_no = func_no;
+	state->super_no = super_no;
 	start_scope(state);
 }
 
@@ -879,13 +894,28 @@ static void compile_constant_identifier(struct compiler_state *state, struct jaf
 
 static void compile_identifier(struct compiler_state *state, struct jaf_expression *expr)
 {
+	assert(expr->ident.kind != JAF_IDENT_UNRESOLVED);
 	if (expr->ident.kind == JAF_IDENT_CONST) {
 		compile_constant_identifier(state, expr);
 		return;
 	}
 	struct ain_variable *var = get_identifier_variable(state, expr);
-	compile_identifier_ref(state, expr);
-	compile_dereference(state, &var->type);
+	switch (var->type.data) {
+	case AIN_INT:
+	case AIN_FLOAT:
+	case AIN_BOOL:
+	case AIN_LONG_INT:
+	case AIN_FUNC_TYPE:
+		if (expr->ident.kind == JAF_IDENT_LOCAL)
+			write_instruction1(state, SH_LOCALREF, expr->ident.local->var);
+		else
+			write_instruction1(state, SH_GLOBALREF, expr->ident.global);
+		break;
+	default:
+		compile_identifier_ref(state, expr);
+		compile_dereference(state, &var->type);
+		break;
+	}
 }
 
 /*
@@ -1006,7 +1036,10 @@ static void compile_unary(struct compiler_state *state, struct jaf_expression *e
 		break;
 	case JAF_UNARY_MINUS:
 		compile_expression(state, expr->expr);
-		write_instruction0(state, INV);
+		if (expr->valuetype.data == AIN_FLOAT)
+			write_instruction0(state, F_INV);
+		else
+			write_instruction0(state, INV);
 		break;
 	case JAF_BIT_NOT:
 		compile_expression(state, expr->expr);
@@ -1932,6 +1965,10 @@ static void compile_vardecl(struct compiler_state *state, struct jaf_block_item 
 	}
 
 	switch (decl->valuetype.data) {
+	case AIN_STRUCT:
+	case AIN_ARRAY:
+	case AIN_ARRAY_TYPE:
+	case AIN_IFACE:
 	case AIN_REF_TYPE:
 		scope_add_variable(state, decl->var);
 		break;
@@ -2014,8 +2051,8 @@ static void compile_for(struct compiler_state *state, struct jaf_block *init, st
 	write_instruction1(state, JUMP, 0);
 	// loop increment
 	start_loop(state);
-	compile_expression(state, after);
-	compile_pop(state, after->valuetype.data);
+	if (after)
+		compile_expr_and_pop(state, after);
 	write_instruction1(state, JUMP, addr[0]);
 	// loop body
 	buffer_write_int32_at(&state->out, addr[2], state->out.index);
@@ -2158,6 +2195,10 @@ static void compile_statement(struct compiler_state *state, struct jaf_block_ite
 		start_scope(state);
 	}
 
+	for (int i = (int)kv_size(item->delete_vars) - 1; i >= 0; i--) {
+		compile_delete_var(state, kv_A(item->delete_vars, i)->var);
+	}
+
 	switch (item->kind) {
 	case JAF_DECL_VAR:
 		compile_vardecl(state, item);
@@ -2288,21 +2329,38 @@ static void compile_default_return(struct compiler_state *state, enum ain_data_t
 	}
 }
 
+static int get_alloc_fun(struct ain *ain, struct ain_function *ctor)
+{
+	char *alloc_name = xstrdup(ctor->name);
+	size_t len = strlen(alloc_name);
+	assert(len > 0);
+	assert(alloc_name[len-1] == '0');
+	alloc_name[len-1] = '2';
+	int no = ain_get_function(ain, alloc_name);
+	free(alloc_name);
+	return no;
+}
+
 static void compile_function(struct compiler_state *state, struct jaf_fundecl *decl)
 {
 	assert(decl->func_no >= 0 && decl->func_no < state->ain->nr_functions);
+	struct ain_function *f = &state->ain->functions[decl->func_no];
+	f->crc = 0;
 
-	start_function(state, decl);
-	state->func_no = decl->func_no;
-	state->super_no = decl->super_no;
-
+	start_function(state, decl->func_no, decl->super_no);
 	write_instruction1(state, FUNC, decl->func_no);
-	state->ain->functions[decl->func_no].address = state->out.index;
+	f->address = state->out.index;
+	if (decl->fun_type == JAF_FUN_CONSTRUCTOR) {
+		int alloc_no = get_alloc_fun(state->ain, f);
+		if (alloc_no > 0) {
+			write_instruction0(state, PUSHSTRUCTPAGE);
+			write_instruction1(state, CALLMETHOD, alloc_no);
+		}
+	}
 	compile_block(state, decl->body);
-	compile_default_return(state, state->ain->functions[state->func_no].return_type.data);
+	compile_default_return(state, f->return_type.data);
 	write_instruction0(state, RETURN);
 	write_instruction1(state, ENDFUNC, decl->func_no);
-
 	end_function(state);
 }
 

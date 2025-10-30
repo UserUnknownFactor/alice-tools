@@ -53,10 +53,7 @@ WS  [ \t\v\f]
 
 extern void yyerror(const char *);  /* prints grammar violation message */
 
-extern int sym_type(const char *);  /* returns type from symbol table */
-
 static void comment(void);
-static int check_type(void);
 
 unsigned long jaf_line = 1;
 
@@ -83,13 +80,15 @@ unsigned long jaf_line = 1;
 "int"					{ return(INT); }
 "lint"					{ return(LINT); }
 "intp"					{ return(INTP); }
- "imain_system"				{ return(IMAIN_SYSTEM); }
+"imain_system"				{ return(IMAIN_SYSTEM); }
 "floatp"				{ return(FLOATP); }
 "return"				{ return(SYM_RETURN); }
 "string"				{ return(STRING); }
 "struct"				{ return(STRUCT); }
 "class"					{ return(STRUCT); }
 "interface"				{ return(INTERFACE); }
+"public"				{ return(PUBLIC); }
+"private"				{ return(PRIVATE); }
 "switch"				{ return(SYM_SWITCH); }
 "union"					{ return(UNION); }
 "void"					{ return(VOID); }
@@ -109,6 +108,7 @@ unsigned long jaf_line = 1;
 "hll_func_71"                           { return HLL_FUNC_71; }
 "hll_func"                              { return HLL_FUNC; }
 "hll_struct"                            { return HLL_STRUCT; }
+"hll_delegate"                          { return HLL_DELEGATE; }
 "functype"                              { return FUNCTYPE; }
 "delegate"                              { return DELEGATE; }
 "override"                              { return OVERRIDE; }
@@ -117,8 +117,8 @@ unsigned long jaf_line = 1;
 "assert"                                { return ASSERT; }
 "NULL"					{ return SYM_NULL; }
 
-{L}                                     { return check_type(); }
-{L}{A}*{AT}                             { return check_type(); }
+{L}                                     { RETURN_STRING(IDENTIFIER); }
+{L}{A}*{AT}                             { RETURN_STRING(IDENTIFIER); }
 
 {HP}{H}+{IS}?				{ RETURN_STRING(I_CONSTANT); }
 {NZ}{D}*{IS}?				{ RETURN_STRING(I_CONSTANT); }
@@ -214,17 +214,4 @@ static void comment(void)
                 break;
         }
     yyerror("unterminated comment");
-}
-
-static int check_type(void)
-{
-    switch (sym_type(yytext))
-    {
-    case TYPEDEF_NAME:                /* previously defined */
-        RETURN_STRING(TYPEDEF_NAME);
-    case ENUMERATION_CONSTANT:        /* previously defined */
-        RETURN_STRING(ENUMERATION_CONSTANT);
-    default:                          /* includes undefined */
-        RETURN_STRING(IDENTIFIER);
-    }
 }

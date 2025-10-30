@@ -43,14 +43,15 @@ void jaf_define_interface(struct ain *ain, struct jaf_block_item *def)
 	assert(def->kind == JAF_DECL_INTERFACE);
 	assert(def->struc.name);
 
-	// TODO: allow defining new interface types
 	char *name = conv_output(def->struc.name->text);
 	int iface_no = ain_get_struct(ain, name);
-	free(name);
 	if (iface_no < 0) {
-		JAF_ERROR(def, "Defining new interface types not implemented");
+		def->struc.struct_no = ain_add_struct(ain, name);
+		ain->structures[def->struc.struct_no].is_interface = true;
+	} else {
+		def->struc.struct_no = iface_no;
 	}
-	def->struc.struct_no = iface_no;
+	free(name);
 }
 
 void jaf_define_functype(struct ain *ain, struct jaf_block_item *item)
@@ -208,6 +209,7 @@ void jaf_to_ain_type(struct ain *ain, struct ain_type *out, struct jaf_type_spec
 			}
 		} else {
 			out->struc = jaf_to_ain_struct_type(in->array_type);
+			out->array_type = NULL;
 		}
 	} else if (in->type == JAF_WRAP) {
 		if (!AIN_VERSION_GTE(ain, 11, 0)) {
@@ -219,25 +221,5 @@ void jaf_to_ain_type(struct ain *ain, struct ain_type *out, struct jaf_type_spec
 	} else {
 		out->rank = 0;
 		out->array_type = NULL;
-	}
-}
-
-void jaf_to_initval(struct ain_initval *dst, struct jaf_expression *expr)
-{
-	switch (expr->type) {
-	case JAF_EXP_INT:
-		dst->data_type = AIN_INT;
-		dst->int_value = expr->i;
-		break;
-	case JAF_EXP_FLOAT:
-		dst->data_type = AIN_FLOAT;
-		dst->float_value = expr->f;
-		break;
-	case JAF_EXP_STRING:
-		dst->data_type = AIN_STRING;
-		dst->string_value = strdup(expr->s->text);
-		break;
-	default:
-		JAF_ERROR(expr, "Initval is not constant");
 	}
 }

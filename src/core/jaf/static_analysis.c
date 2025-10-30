@@ -23,120 +23,29 @@
 #include "alice.h"
 #include "alice/jaf.h"
 
-/*
- * Create a new empty scope.
- */
-struct jaf_env *jaf_env_push(struct jaf_env *parent)
-{
-	struct jaf_env *newenv = xcalloc(1, sizeof(struct jaf_env));
-	newenv->ain = parent->ain;
-	newenv->parent = parent;
-	newenv->func_no = parent->func_no;
-	newenv->fundecl = parent->fundecl;
-	return newenv;
-}
-
-/*
- * Discard the current scope and return to the parent scope.
- */
-struct jaf_env *jaf_env_pop(struct jaf_env *env)
-{
-	struct jaf_env *parent = env->parent;
-	free(env->locals);
-	free(env);
-	return parent;
-}
-
-/*
- * Create a new scope for the body of a function call.
- */
-struct jaf_env *jaf_env_push_function(struct jaf_env *parent, struct jaf_fundecl *decl)
-{
-	// create new scope with function arguments
-	struct jaf_env *funenv = jaf_env_push(parent);
-	funenv->func_no = decl->func_no;
-	funenv->fundecl = decl;
-	funenv->nr_locals = decl->params ? decl->params->nr_items : 0;
-	if (funenv->nr_locals) {
-		funenv->locals = xcalloc(funenv->nr_locals, sizeof(struct jaf_env_local));
-		for (size_t i = 0; i < funenv->nr_locals; i++) {
-			struct jaf_block_item *param = decl->params->items[i];
-			assert(param->kind == JAF_DECL_VAR);
-			funenv->locals[i].name = param->var.name->text;
-			funenv->locals[i].decl = &param->var;
-		}
-	}
-
-	return funenv;
-}
-
-void jaf_env_add_local(struct jaf_env *env, struct jaf_vardecl *decl)
-{
-	env->locals = xrealloc_array(env->locals, env->nr_locals, env->nr_locals+1,
-				     sizeof(struct jaf_env_local));
-	env->locals[env->nr_locals++] = (struct jaf_env_local) {
-		.name = decl->name->text,
-		.decl = decl,
-	};
-}
-
-static struct jaf_env_local *jaf_scope_lookup(struct jaf_env *env, const char *name)
-{
-	for (size_t i = 0; i < env->nr_locals; i++) {
-		if (!strcmp(env->locals[i].name, name)) {
-			return &env->locals[i];
-		}
-	}
-	return NULL;
-}
-
-struct jaf_env_local *jaf_env_lookup(struct jaf_env *env, const char *name)
-{
-	struct jaf_env *scope = env;
-        while (scope) {
-		struct jaf_env_local *v = jaf_scope_lookup(scope, name);
-		if (v) {
-			return v;
-		}
-		scope = scope->parent;
-	}
-	return NULL;
-}
-
-/*
- * This function sets up a new scope before the child nodes are analyzed (as required).
- */
 static void jaf_analyze_stmt_pre(struct jaf_block_item *stmt, struct jaf_visitor *visitor)
 {
-	struct jaf_env *env = visitor->data;
-	// create a new scope
-	switch (stmt->kind) {
-	case JAF_DECL_FUN:
-		if (stmt->fun.body) {
-			visitor->data = env = jaf_env_push_function(visitor->data, &stmt->fun);
-			jaf_to_ain_type(env->ain, &stmt->fun.valuetype, stmt->fun.type);
-		}
-		break;
-	case JAF_STMT_COMPOUND:
-	case JAF_STMT_SWITCH:
-	case JAF_STMT_FOR:
-		visitor->data = jaf_env_push(visitor->data);
-		break;
-	default:
-		break;
+	if (stmt->kind == JAF_DECL_FUN && stmt->fun.body) {
+		jaf_to_ain_type(visitor->env->ain, &stmt->fun.valuetype, stmt->fun.type);
 	}
 }
 
 static void jaf_analyze_stmt_post(struct jaf_block_item *stmt, struct jaf_visitor *visitor)
 {
-	struct jaf_env *env = visitor->data;
+	jaf_type_check_statement(visitor->env, stmt);
 
-	jaf_type_check_statement(env, stmt);
-
-	// restore previous scope
 	switch (stmt->kind) {
 	case JAF_DECL_VAR:
-		jaf_type_check_vardecl(env, stmt);
+		jaf_type_check_vardecl(visitor->env, stmt);
+		break;
+	case JAF_DECL_STRUCT:
+		// TODO: check that methods declared in struct have implementation
+		//jaf_analyze_struct(visitor->env, stmt);
+		break;
+	case JAF_DECL_INTERFACE:
+		// TODO: For interfaces that were already defined in input .ain file, check
+		//       that iface declaration is compatible with existing implementations.
+		//jaf_analyze_interface(visitor->env, stmt);
 		break;
 	case JAF_DECL_FUN:
 		if (!stmt->fun.body)
@@ -146,7 +55,6 @@ static void jaf_analyze_stmt_post(struct jaf_block_item *stmt, struct jaf_visito
 	case JAF_STMT_SWITCH:
 	case JAF_STMT_FOR:
 		stmt->is_scope = true;
-		visitor->data = jaf_env_pop(env);
 		break;
 	default:
 		break;
@@ -155,29 +63,72 @@ static void jaf_analyze_stmt_post(struct jaf_block_item *stmt, struct jaf_visito
 
 static struct jaf_expression *jaf_analyze_expr(struct jaf_expression *expr, struct jaf_visitor *visitor)
 {
-	if (expr->type == JAF_EXP_NEW) {
-		visitor->stmt->is_scope = true;
-	}
-	jaf_type_check_expression(visitor->data, expr);
+	jaf_type_check_expression(visitor->env, expr);
 	return jaf_simplify(expr);
+}
+
+static int add_library_function(struct ain_library *lib)
+{
+	lib->functions = xrealloc_array(lib->functions, lib->nr_functions, lib->nr_functions+1,
+			sizeof(struct ain_hll_function));
+	return lib->nr_functions++;
+}
+
+#define HLL_ARG(str, t) \
+	(struct ain_hll_argument) { \
+		.name = xstrdup(str), \
+		.type = { .data = t, .struc = -1 } \
+	}
+
+static void jaf_check_builtin_hll(struct ain *ain)
+{
+	// ensure that Array.Alloc and Array.Free exist, because calls to them are
+	// generated implicitly
+	if (AIN_VERSION_GTE(ain, 11, 0)) {
+		int array_hll = ain_get_library(ain, "Array");
+		if (array_hll < 0)
+			array_hll = ain_add_library(ain, "Array");
+		assert(array_hll >= 0 && array_hll < ain->nr_libraries);
+		struct ain_library *lib = &ain->libraries[array_hll];
+		int alloc_fno = ain_get_library_function(ain, array_hll, "Alloc");
+		if (alloc_fno < 0) {
+			alloc_fno = add_library_function(lib);
+			struct ain_hll_function *f = &lib->functions[alloc_fno];
+			f->name = xstrdup("Alloc");
+			f->return_type.data = AIN_VOID;
+			f->return_type.struc = -1;
+			f->nr_arguments = 5;
+			f->arguments = xcalloc(5, sizeof(struct ain_hll_argument));
+			f->arguments[0] = HLL_ARG("self", AIN_REF_ARRAY);
+			f->arguments[1] = HLL_ARG("Numof", AIN_INT);
+			f->arguments[2] = HLL_ARG("Numof2", AIN_INT);
+			f->arguments[3] = HLL_ARG("Numof3", AIN_INT);
+			f->arguments[4] = HLL_ARG("Numof4", AIN_INT);
+		}
+		int free_fno = ain_get_library_function(ain, array_hll, "Free");
+		if (free_fno < 0) {
+			free_fno = add_library_function(lib);
+			struct ain_hll_function *f = &lib->functions[free_fno];
+			f->name = xstrdup("Free");
+			f->return_type.data = AIN_VOID;
+			f->return_type.struc = -1;
+			f->nr_arguments = 1;
+			f->arguments = xcalloc(1, sizeof(struct ain_hll_argument));
+			f->arguments[0] = HLL_ARG("self", AIN_REF_ARRAY);
+		}
+	}
 }
 
 struct jaf_block *jaf_static_analyze(struct ain *ain, struct jaf_block *block)
 {
-	struct jaf_env env = {
-		.ain = ain,
-		.parent = NULL,
-		.locals = NULL
-	};
+	jaf_check_builtin_hll(ain);
+
 	struct jaf_visitor visitor = {
 		.visit_stmt_pre = jaf_analyze_stmt_pre,
 		.visit_stmt_post = jaf_analyze_stmt_post,
 		.visit_expr_post = jaf_analyze_expr,
-		.data = &env,
 	};
 
-	jaf_accept_block(block, &visitor);
-	free(env.locals);
-
+	jaf_accept_block(ain, block, &visitor);
 	return block;
 }
